@@ -1,0 +1,85 @@
+name: ClickHouse JS Client Head Release Test
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+    update-and-push:
+        runs-on: ubuntu-latest
+        env:
+            TARGET_BRANCH: clickhouse-js-client-release-test
+            DEP_NAME: '@clickhouse/client'
+            DEP_VERSION: head
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-node@v4
+              with:
+                  cache: 'npm'
+                  node-version-file: '.nvmrc'
+
+            - name: Set ${{ env.DEP_NAME }} to "${{ env.DEP_VERSION }}" in all package.json files
+              run: |
+                  node <<'EOF'
+                  const fs = require('fs');
+                  const { execSync } = require('child_process');
+
+                  const dep = process.env.DEP_NAME;
+                  const version = process.env.DEP_VERSION;
+
+                  const files = execSync('git ls-files "*package.json"', { encoding: 'utf8' })
+                      .split('\n')
+                      .filter(Boolean);
+
+                  let changed = 0;
+                  for (const file of files) {
+                      const raw = fs.readFileSync(file, 'utf8');
+                      let pkg;
+                      try {
+                          pkg = JSON.parse(raw);
+                      } catch (err) {
+                          console.warn(`Skipping ${file}: ${err.message}`);
+                          continue;
+                      }
+                      let updated = false;
+                      for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+                          if (pkg[field] && Object.prototype.hasOwnProperty.call(pkg[field], dep)) {
+                              if (pkg[field][dep] !== version) {
+                                  pkg[field][dep] = version;
+                                  updated = true;
+                              }
+                          }
+                      }
+                      if (updated) {
+                          const trailingNewline = raw.endsWith('\n') ? '\n' : '';
+                          fs.writeFileSync(file, JSON.stringify(pkg, null, 4) + trailingNewline);
+                          console.log(`Updated ${file}`);
+                          changed++;
+                      }
+                  }
+                  console.log(`Updated ${changed} package.json file(s).`);
+                  EOF
+
+            - name: Update lockfile
+              run: npm install
+
+            - name: Commit and force push to ${{ env.TARGET_BRANCH }}
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+                  git checkout -B "$TARGET_BRANCH"
+                  git add -A
+
+                  if git diff --cached --quiet; then
+                      echo "No changes to commit."
+                      exit 0
+                  fi
+
+                  git commit -m "chore: pin ${DEP_NAME} to ${DEP_VERSION} for release test"
+                  git push --force origin "$TARGET_BRANCH"
